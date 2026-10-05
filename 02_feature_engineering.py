@@ -28,8 +28,9 @@ import pandas as pd
 
 SEED = 42
 G_MS2 = 9.81          # 1 g in m/s²
-HARD_ACC_G  =  0.3    # threshold for "hard acceleration" (g)
-HARD_BRK_G  = -0.3    # threshold for "hard braking"     (g)
+HARD_ACC_G  =  0.2    # threshold for "hard acceleration" (g)
+MAX_ABS_ACCEL_G = 1.0  # Provisional data-quality threshold
+HARD_BRK_G  = -0.2    # threshold for "hard braking"     (g)
 IDLE_KMH    =  2.0    # speed below this = idling
 IDLE_RPM    =  400    # rpm above this = engine running
 HIGH_RPM    = 3000    # rpm above this = "high RPM" flag
@@ -37,106 +38,238 @@ SPD_80      = 80.0    # km/h – urban/suburban boundary
 SPD_110     = 110.0   # km/h – highway boundary
 
 
+
+MAX_ACCEL_GAP_S = 5.0  # Ignore acceleration intervals spanning >5 seconds
+
+SMOOTH_WINDOW_S = 3   # centred moving average (seconds) on the 1 Hz grid
+
 def compute_accel(grp: pd.DataFrame) -> pd.Series:
     """
-    Compute instantaneous acceleration in m/s² using central differences
-    where possible, forward/backward at the edges.
-    Returns a Series aligned to grp's index.
+    Acceleration in m/s^2 from a speed signal that updates ~1 Hz but is
+    sampled at irregular, sometimes 0.1 s, intervals.
+
+    Steps: resample speed to a 1 Hz grid -> blank grid points inside long
+    gaps -> smooth with a 3 s centred mean -> central difference over the
+    grid -> map back onto the original sample timestamps.
     """
-    v = grp["speed_kmh"].values / 3.6          # → m/s
-    t = grp["t_ms"].values / 1000.0            # → s
+    n = len(grp)
+    out = np.full(n, np.nan)
+    if n < 3:
+        return pd.Series(out, index=grp.index, dtype=float)
 
-    dt = np.diff(t, append=np.nan)
-    dt_prev = np.diff(t, prepend=np.nan)
+    t = grp["t_ms"].to_numpy(dtype=float) / 1000.0
+    v = grp["speed_kmh"].to_numpy(dtype=float) / 3.6
 
-    # central difference (most samples)
-    dv = np.diff(v, append=np.nan)
-    dv_prev = np.diff(v, prepend=np.nan)
+    ok = np.isfinite(t) & np.isfinite(v)
+    if ok.sum() < 3:
+        return pd.Series(out, index=grp.index, dtype=float)
+    t_ok, v_ok = t[ok], v[ok]
 
-    acc = np.where(
-        np.isfinite(dt) & np.isfinite(dt_prev),
-        (dv / np.where(dt > 0, dt, np.nan) +
-         dv_prev / np.where(dt_prev > 0, dt_prev, np.nan)) / 2.0,
-        np.where(
-            np.isfinite(dt),
-            dv / np.where(dt > 0, dt, np.nan),
-            dv_prev / np.where(dt_prev > 0, dt_prev, np.nan),
-        ),
-    )
-    return pd.Series(acc, index=grp.index)
+    t_grid = np.arange(np.ceil(t_ok[0]), np.floor(t_ok[-1]) + 1.0, 1.0)
+    if len(t_grid) < SMOOTH_WINDOW_S + 2:
+        return pd.Series(out, index=grp.index, dtype=float)
+
+    v_grid = np.interp(t_grid, t_ok, v_ok)
+
+    # Grid points that fall inside a gap longer than MAX_ACCEL_GAP_S are invalid
+    nxt = np.clip(np.searchsorted(t_ok, t_grid, side="right"), 1, len(t_ok) - 1)
+    v_grid[(t_ok[nxt] - t_ok[nxt - 1]) > MAX_ACCEL_GAP_S] = np.nan
+
+    vs = pd.Series(v_grid).rolling(
+        SMOOTH_WINDOW_S, center=True, min_periods=SMOOTH_WINDOW_S
+    ).mean()
+    a = ((vs.shift(-1) - vs.shift(1)) / 2.0).to_numpy()   # grid step = 1 s
+
+    acc = np.interp(t, t_grid, a)           # NaN propagates across invalid points
+    acc[(t < t_grid[0]) | (t > t_grid[-1])] = np.nan
+    acc[~np.isfinite(v)] = np.nan
+    return pd.Series(acc, index=grp.index, dtype=float)
+
+
 
 
 def feature_row(grp: pd.DataFrame) -> dict:
-    """Compute all behavioural features for one trip group."""
-    acc = compute_accel(grp) / G_MS2          # in g-units
+    """Compute behavioural features for one trip group."""
+    acc_raw = compute_accel(grp) / G_MS2
+
+    # Preserve the raw signal for diagnostics, but exclude extreme
+    # estimates from behavioural features.
+    acc = acc_raw.where(acc_raw.abs() <= MAX_ABS_ACCEL_G)
     spd = grp["speed_kmh"]
     rpm = grp["rpm"]
     load = grp["load_pct"]
-    dt = grp["dt_valid_s"].fillna(0)           # seconds per sample interval
+
+    dt = pd.to_numeric(grp["dt_valid_s"], errors="coerce").fillna(0)
+    dt = dt.clip(lower=0)
+
     total_s = dt.sum()
-    if total_s == 0:
+    if total_s <= 0:
         return {}
 
-    # ── speed features ──────────────────────────────────────────────────────
-    spd_valid = spd.dropna()
+    # Denominators use intervals where the relevant signal is available.
+    speed_valid = spd.notna()
+    rpm_valid = rpm.notna()
+    accel_valid = speed_valid & acc.notna()
+
+    speed_time = dt[speed_valid].sum()
+    rpm_time = dt[rpm_valid].sum()
+    accel_time_valid = dt[accel_valid].sum()
+
+    def percentage(numerator_s, denominator_s):
+        if denominator_s <= 0:
+            return np.nan
+        return 100.0 * numerator_s / denominator_s
+
+    # ── Speed features ────────────────────────────────────────────────
+    spd_valid = spd[speed_valid]
+
     f = {
-        "speed_mean_kmh"     : spd_valid.mean(),
-        "speed_std_kmh"      : spd_valid.std(),
-        "speed_max_kmh"      : spd_valid.max(),
-        "pct_time_over_80"   : (dt[spd > SPD_80]).sum() / total_s * 100,
-        "pct_time_over_110"  : (dt[spd > SPD_110]).sum() / total_s * 100,
+        "speed_mean_kmh": spd_valid.mean(),
+        "speed_std_kmh": spd_valid.std(),
+        "speed_max_kmh": spd_valid.max(),
+        "pct_time_over_80": percentage(
+            dt[speed_valid & (spd > SPD_80)].sum(), speed_time
+        ),
+        "pct_time_over_110": percentage(
+            dt[speed_valid & (spd > SPD_110)].sum(), speed_time
+        ),
     }
 
-    # ── acceleration features ────────────────────────────────────────────────
-    acc_valid = acc[spd.notna()]
-    hard_acc = (acc_valid >= HARD_ACC_G).sum()
-    hard_brk = (acc_valid <= HARD_BRK_G).sum()
-    accel_time  = dt[(acc >= HARD_ACC_G * 0.5) & spd.notna()].sum()   # gentle threshold for % time
-    decel_time  = dt[(acc <= HARD_BRK_G * 0.5) & spd.notna()].sum()
-    cruise_time = dt[acc_valid.reindex(dt.index).between(-0.05, 0.05)].sum()
+    # ── Acceleration and braking ──────────────────────────────────────
+        # Valid acceleration samples after applying the data-quality filter
+    accel_valid = speed_valid & acc.notna()
+    acc_valid = acc[accel_valid]
+
+    # Valid time denominator for acceleration-related percentages
+    accel_time_valid = dt[accel_valid].sum()
+
+    def percentage(numerator_s, denominator_s):
+        if denominator_s <= 0:
+            return np.nan
+        return 100.0 * numerator_s / denominator_s
+
+    # Event flags: filtered acceleration only
+    hard_acc_flag = (acc >= HARD_ACC_G).fillna(False)
+    hard_brk_flag = (acc <= HARD_BRK_G).fillna(False)
+
+    hard_acc_starts = (
+        hard_acc_flag
+        & ~hard_acc_flag.shift(1, fill_value=False)
+    )
+    hard_brk_starts = (
+        hard_brk_flag
+        & ~hard_brk_flag.shift(1, fill_value=False)
+    )
+
+    # Time-weighted behaviour categories
+    accel_mask = accel_valid & (acc >= HARD_ACC_G * 0.5)
+    decel_mask = accel_valid & (acc <= HARD_BRK_G * 0.5)
+    cruise_mask = accel_valid & acc.between(-0.05, 0.05)
 
     f.update({
-        "acc_mean_g"         : acc_valid.mean(),
-        "acc_std_g"          : acc_valid.std(),
-        "acc_max_g"          : acc_valid.max(),
-        "dec_max_g"          : acc_valid.min(),
-        "hard_acc_count"     : int(hard_acc),
-        "hard_brk_count"     : int(hard_brk),
-        "pct_accel_time"     : accel_time  / total_s * 100,
-        "pct_decel_time"     : decel_time  / total_s * 100,
-        "pct_cruise_time"    : cruise_time / total_s * 100,
+        "acc_mean_g": acc_valid.mean(),
+        "acc_std_g": acc_valid.std(),
+        "acc_p95_g": acc_valid[acc_valid > 0].quantile(0.95),
+        "acc_p05_g": acc_valid[acc_valid < 0].quantile(0.05),
+        "hard_acc_count": int(hard_acc_starts.sum()),
+        "hard_brk_count": int(hard_brk_starts.sum()),
+        "pct_accel_time": percentage(
+            dt[accel_mask].sum(), accel_time_valid
+        ),
+        "pct_decel_time": percentage(
+            dt[decel_mask].sum(), accel_time_valid
+        ),
+        "pct_cruise_time": percentage(
+            dt[cruise_mask].sum(), accel_time_valid
+        ),
     })
 
-    # ── RPM features ─────────────────────────────────────────────────────────
-    rpm_valid = rpm.dropna()
+    # Moderate acceleration/deceleration and near-constant-speed time.
+    accel_mask = accel_valid & (acc >= HARD_ACC_G * 0.5)
+    decel_mask = accel_valid & (acc <= HARD_BRK_G * 0.5)
+    cruise_mask = accel_valid & acc.between(-0.05, 0.05)
+
     f.update({
-        "rpm_mean"           : rpm_valid.mean(),
-        "rpm_std"            : rpm_valid.std(),
-        "rpm_max"            : rpm_valid.max(),
-        "pct_time_high_rpm"  : (dt[rpm >= HIGH_RPM]).sum() / total_s * 100,
+        "acc_mean_g": acc_valid.mean(),
+        "acc_std_g": acc_valid.std(),
+        "acc_max_g": acc_valid.max(),
+        "dec_max_g": acc_valid.min(),
+        "hard_acc_count": int(hard_acc_starts.sum()),
+        "hard_brk_count": int(hard_brk_starts.sum()),
+        "pct_accel_time": percentage(
+            dt[accel_mask].sum(), accel_time_valid
+        ),
+        "pct_decel_time": percentage(
+            dt[decel_mask].sum(), accel_time_valid
+        ),
+        "pct_cruise_time": percentage(
+            dt[cruise_mask].sum(), accel_time_valid
+        ),
     })
 
-    # ── engine load ──────────────────────────────────────────────────────────
+    # ── RPM features ──────────────────────────────────────────────────
+    rpm_values = rpm[rpm_valid]
+
     f.update({
-        "load_mean_pct"      : load.mean(),     # likely NaN for most vehicles
-        "load_std_pct"       : load.std(),
+        "rpm_mean": rpm_values.mean(),
+        "rpm_std": rpm_values.std(),
+        "rpm_max": rpm_values.max(),
+        "pct_time_high_rpm": percentage(
+            dt[rpm_valid & (rpm >= HIGH_RPM)].sum(), rpm_time
+        ),
     })
 
-    # ── idling & stop-and-go ─────────────────────────────────────────────────
-    idle_mask = (spd < IDLE_KMH) & (rpm > IDLE_RPM)
-    idle_frac = dt[idle_mask].sum() / total_s
+    # ── Engine load ───────────────────────────────────────────────────
+    f.update({
+        "load_mean_pct": load.mean(),
+        "load_std_pct": load.std(),
+    })
 
-    # count transitions: not-idle → idle (each counts as one stop event)
+    # ── Idling and stop-and-go ────────────────────────────────────────
+    idle_valid = speed_valid & rpm_valid
+    idle_mask = (
+        idle_valid
+        & (spd < IDLE_KMH)
+        & (rpm > IDLE_RPM)
+    )
+
+    idle_observed_time = dt[idle_valid].sum()
+    idle_time = dt[idle_mask].sum()
+
+    f["idle_frac"] = (
+        idle_time / idle_observed_time
+        if idle_observed_time > 0
+        else np.nan
+    )
+
+    # Count transitions from an observed idle sample to an
+    # observed moving sample with the engine running.
+    moving_mask = (
+        idle_valid
+        & (spd >= IDLE_KMH)
+        & (rpm > IDLE_RPM)
+    )
+
     was_idle = idle_mask.shift(1, fill_value=False)
-    stop_go_events = int((idle_mask & ~was_idle).sum())
 
-    f.update({
-        "idle_frac"          : idle_frac,
-        "stop_go_events"     : stop_go_events,
-    })
+    # dt_valid_s describes the current -> next interval.
+    # Shift it to validate the previous -> current transition.
+    transition_dt = dt.shift(1)
+
+    valid_transition = (
+        transition_dt.gt(0)
+        & transition_dt.le(MAX_ACCEL_GAP_S)
+    )
+
+    stop_go_events = (
+        was_idle
+        & moving_mask
+        & valid_transition
+    )
+
+    f["stop_go_events"] = int(stop_go_events.sum())
 
     return f
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -173,6 +306,18 @@ def main():
                  "Transmission", "Drive Wheels", "Generalized_Weight"]
     trip_cols = [c for c in trip_cols if c in trips.columns]
     feats = feats.merge(trips[trip_cols], on=["veh_id", "trip"], how="left")
+    feats["hard_acc_per_100km"] = feats["hard_acc_count"] / feats["distance_km"] * 100
+    feats["hard_brk_per_100km"] = feats["hard_brk_count"] / feats["distance_km"] * 100
+    feats["stop_go_per_km"]     = feats["stop_go_events"] / feats["distance_km"]
+    
+    MIN_TRIPS_PER_VEHICLE = 5
+    feats["veh_n_trips"] = feats.groupby("veh_id")["trip"].transform("size")
+    veh_median = feats.groupby("veh_id")["l_per_100km"].transform("median")
+    feats["fuel_rel_vehicle"] = np.where(
+        feats["veh_n_trips"] >= MIN_TRIPS_PER_VEHICLE,
+        feats["l_per_100km"] / veh_median,
+        np.nan,
+    )
 
     # Basic sanity report
     print("\n── Feature completeness (% non-NaN) ──")

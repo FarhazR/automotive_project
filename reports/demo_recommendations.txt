@@ -2,132 +2,62 @@
   DRIVING EFFICIENCY REPORT
 =================================================================
   Trip summary
-    Distance      : 12.0 km
-    Duration      : 22.2 min
-    Avg speed     : 32.4 km/h
-    Fuel use      : 12.62 L/100 km
-    Driving style : Aggressive
-    Efficient ref : 7.34 L/100 km (top-25% trips)
+    Distance      : 3.6 km
+    Duration      : 5.9 min
+    Avg speed     : 36.4 km/h
+    Fuel use      : 7.47 L/100 km (estimated)
+    vs own median : 0.96x (1.00 = this vehicle's typical trip)
+    Trip pattern  : Free-flowing
 -----------------------------------------------------------------
-  9 recommendation(s), ranked by impact:
-
-  [1] Hard Acceleration Events  (severity 1.00)
-      You recorded 69 hard acceleration events vs 19 in efficient
-      trips. Rapid acceleration sharply increases fuel demand.
-      Gradual, progressive acceleration reduces fuel consumption
-      and mechanical wear.
-
-  [2] Hard Braking Events  (severity 1.00)
-      You recorded 74 hard braking events vs 23 in efficient
-      trips. Hard braking dissipates kinetic energy that cost fuel
-      to build. Anticipating traffic flow further ahead allows
-      gentler deceleration.
-
-  [3] Peak Acceleration (g)  (severity 1.00)
-      Peak acceleration (2.83g vs 1.00g in efficient trips) is
-      high. Occasional aggressive inputs significantly raise
-      instantaneous fuel demand. A lighter right foot during the
-      first few seconds of acceleration makes the largest
-      difference.
-
-  [4] Idle Fraction  (severity 0.57)
-      Your engine idled for 29% of trip time vs 15% in efficient
-      trips. Extended idling wastes fuel with zero distance gain.
-      If stationary for more than ~60 seconds, switching off is
-      worth considering.
-
-  [5] Speed Variability (km/h std)  (severity 0.51)
-      Speed variability is higher than the efficient profile (29.6
-      vs 23.8 km/h std). Maintaining a more consistent speed
-      reduces the repeated acceleration cost. On open roads,
-      cruise control or conscious speed-steadying helps.
-
-  [6] Mean RPM  (severity 0.44)
-      Mean RPM (1316) is lower than in efficient trips (1529). In
-      combination with low speed, this may indicate short urban
-      trips where the engine rarely reaches its efficient
-      operating range. Consolidating short trips where possible
-      reduces per-km fuel cost.
-
-  [7] Stop-and-Go Events  (severity 0.42)
-      Your trip had 8 stop-and-go events vs 3 in efficient trips.
-      Frequent stopping and restarting burns significantly more
-      fuel. Where conditions allow, maintain a steady roll rather
-      than coming to a complete stop.
-
-  [8] Avg Speed (km/h)  (severity 0.40)
-      Average trip speed (35.1 km/h) is below the efficient
-      profile (47.2 km/h). This suggests mostly low-speed urban
-      operation with high idle/stop overhead. Where route choice
-      is possible, roads with fewer traffic signals can improve
-      efficiency.
-
-  [9] Accel. Variability (g std)  (severity 0.39)
-      Acceleration variability (std 0.231g vs 0.183g) is elevated.
-      Smoother, more consistent throttle inputs are associated
-      with lower fuel use. Try to maintain even pressure on the
-      accelerator and avoid surging.
-
+  No clear inefficiencies detected against the reference.
 =================================================================
-  Note: Recommendations are based on patterns observed in the
-  VED dataset. Fuel consumption is also affected by vehicle
-  type, road gradient, traffic, weather, and tyre condition.
-  Results use MAF-estimated fuel (direct OBD fuel rate
-  unavailable in this dataset).
+  Note: estimates come from a within-vehicle model on the VED
+  dataset (associations, not proof of cause). Fuel is estimated
+  from MAF; road gradient, traffic, weather and load are not
+  modelled. Stop-go and idling are partly set by traffic.
 =================================================================
 
 =================================================================
   DRIVING EFFICIENCY REPORT
 =================================================================
   Trip summary
-    Distance      : 5.6 km
-    Duration      : 10.5 min
-    Avg speed     : 31.9 km/h
-    Fuel use      : 9.65 L/100 km
-    Driving style : Moderate
-    Efficient ref : 7.34 L/100 km (top-25% trips)
+    Distance      : 8.1 km
+    Duration      : 15.8 min
+    Avg speed     : 30.8 km/h
+    Fuel use      : 12.79 L/100 km (estimated)
+    vs own median : 1.02x (1.00 = this vehicle's typical trip)
+    Trip pattern  : Stop-and-go
 -----------------------------------------------------------------
-  1 recommendation(s), ranked by impact:
+  4 suggestion(s), ranked by estimated fuel impact:
 
-  [1] Avg Speed (km/h)  (severity 0.49)
-      Average trip speed (32.2 km/h) is below the efficient
-      profile (47.2 km/h). This suggests mostly low-speed urban
-      operation with high idle/stop overhead. Where route choice
-      is possible, roads with fewer traffic signals can improve
-      efficiency.
+  [1] Stop-and-Go Events (per km)  (est. +8.8% fuel vs reference)
+      This trip had 1.36 stop-and-go events per km vs 0.52 in the
+      most fuel-efficient trips. In this dataset, trips with more
+      stop-and-go than usual used more fuel in the same vehicle.
+      Where traffic allows, anticipating signals and keeping a
+      steady roll can avoid some full stops.
 
-=================================================================
-  Note: Recommendations are based on patterns observed in the
-  VED dataset. Fuel consumption is also affected by vehicle
-  type, road gradient, traffic, weather, and tyre condition.
-  Results use MAF-estimated fuel (direct OBD fuel rate
-  unavailable in this dataset).
-=================================================================
+  [2] Idle Fraction  (est. +3.7% fuel vs reference)
+      The engine idled for 24% of the trip vs 14% in the most
+      fuel-efficient trips. Idling uses fuel without covering
+      distance. Route or departure-time choices that avoid long
+      waits help, and where safe and permitted, switching off
+      during long stationary waits is worth considering.
 
-=================================================================
-  DRIVING EFFICIENCY REPORT
-=================================================================
-  Trip summary
-    Distance      : 5.2 km
-    Duration      : 5.3 min
-    Avg speed     : 59.4 km/h
-    Fuel use      : 8.50 L/100 km
-    Driving style : Efficient
-    Efficient ref : 7.34 L/100 km (top-25% trips)
------------------------------------------------------------------
-  1 recommendation(s), ranked by impact:
+  [3] Hard Braking (per 100 km)  (est. +2.4% fuel vs reference)
+      This trip had 62 hard braking events per 100 km vs 19 in the
+      most fuel-efficient trips. Hard braking discards speed that
+      fuel was spent building. Looking further ahead allows
+      gentler, earlier deceleration.
 
-  [1] Peak Acceleration (g)  (severity 0.28)
-      Peak acceleration (1.42g vs 1.00g in efficient trips) is
-      high. Occasional aggressive inputs significantly raise
-      instantaneous fuel demand. A lighter right foot during the
-      first few seconds of acceleration makes the largest
-      difference.
+  [4] Acceleration Variability (g std)  (est. +1.9% fuel vs reference)
+      Acceleration variability (std 0.075 g vs 0.061 g) is higher
+      than in the most fuel-efficient trips. Smoother, more even
+      speed changes are associated with lower fuel use.
 
 =================================================================
-  Note: Recommendations are based on patterns observed in the
-  VED dataset. Fuel consumption is also affected by vehicle
-  type, road gradient, traffic, weather, and tyre condition.
-  Results use MAF-estimated fuel (direct OBD fuel rate
-  unavailable in this dataset).
+  Note: estimates come from a within-vehicle model on the VED
+  dataset (associations, not proof of cause). Fuel is estimated
+  from MAF; road gradient, traffic, weather and load are not
+  modelled. Stop-go and idling are partly set by traffic.
 =================================================================

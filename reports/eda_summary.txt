@@ -12,28 +12,28 @@ min        4.57
 max       39.00
 
 [4] Pearson correlation with L/100km (top features)
-stop_go_events       0.410
-idle_frac            0.402
-speed_mean_kmh      -0.401
-rpm_mean            -0.398
-load_mean_pct       -0.317
-hard_acc_count       0.294
-load_std_pct        -0.285
-acc_max_g            0.279
-acc_mean_g           0.238
-hard_brk_count       0.231
-speed_max_kmh       -0.212
-acc_std_g            0.197
-pct_time_over_80    -0.179
-speed_std_kmh       -0.150
-pct_time_over_110   -0.145
-rpm_max             -0.085
-pct_time_high_rpm   -0.074
-pct_cruise_time      0.074
-pct_accel_time       0.066
-rpm_std              0.034
-dec_max_g           -0.030
-pct_decel_time      -0.002
+stop_go_per_km        0.513
+idle_frac             0.402
+speed_mean_kmh       -0.401
+rpm_mean             -0.398
+load_mean_pct        -0.317
+load_std_pct         -0.285
+speed_max_kmh        -0.212
+pct_time_over_80     -0.179
+acc_mean_g            0.174
+speed_std_kmh        -0.150
+hard_brk_per_100km    0.146
+pct_time_over_110    -0.145
+acc_std_g             0.121
+pct_cruise_time      -0.109
+dec_max_g            -0.096
+pct_decel_time        0.086
+rpm_max              -0.085
+pct_accel_time        0.078
+pct_time_high_rpm    -0.074
+hard_acc_per_100km    0.056
+rpm_std               0.034
+acc_max_g            -0.034
 
 [5] L/100km by Vehicle Class
                count   mean   std   min   25%   50%    75%    max
@@ -42,54 +42,85 @@ Car             14.0   7.43  1.37  5.72  6.81  7.19   7.60  11.37
 NO DATA        953.0  10.78  3.88  4.57  8.34  9.94  12.37  39.00
 
 [6] Spearman rank correlation with L/100km
-          feature  spearman_r  p_value significant
-   speed_mean_kmh      -0.492   0.0000         ***
-         rpm_mean      -0.463   0.0000         ***
-   stop_go_events       0.411   0.0000         ***
-        idle_frac       0.408   0.0000         ***
-        acc_max_g       0.377   0.0000         ***
-    load_mean_pct      -0.365   0.0000         ***
-     load_std_pct      -0.315   0.0000         ***
-   hard_acc_count       0.292   0.0000         ***
-       acc_mean_g       0.284   0.0000         ***
-        acc_std_g       0.247   0.0000         ***
-   hard_brk_count       0.205   0.0000         ***
-pct_time_over_110      -0.197   0.0000         ***
-    speed_max_kmh      -0.185   0.0000         ***
- pct_time_over_80      -0.130   0.0001         ***
-   pct_accel_time       0.130   0.0000         ***
-          rpm_std       0.128   0.0001         ***
-pct_time_high_rpm      -0.102   0.0015          **
-    speed_std_kmh      -0.090   0.0050          **
-          rpm_max      -0.068   0.0341           *
-        dec_max_g      -0.066   0.0401           *
-   pct_decel_time       0.065   0.0427           *
-  pct_cruise_time       0.020   0.5283            
+           feature  spearman_r  p_value significant
+    speed_mean_kmh      -0.492   0.0000         ***
+    stop_go_per_km       0.478   0.0000         ***
+          rpm_mean      -0.463   0.0000         ***
+         idle_frac       0.408   0.0000         ***
+     load_mean_pct      -0.365   0.0000         ***
+      load_std_pct      -0.315   0.0000         ***
+hard_brk_per_100km       0.227   0.0000         ***
+ pct_time_over_110      -0.197   0.0000         ***
+        acc_mean_g       0.196   0.0000         ***
+     speed_max_kmh      -0.185   0.0000         ***
+   pct_cruise_time      -0.168   0.0000         ***
+         dec_max_g      -0.168   0.0000         ***
+         acc_std_g       0.166   0.0000         ***
+    pct_accel_time       0.154   0.0000         ***
+  pct_time_over_80      -0.130   0.0001         ***
+           rpm_std       0.128   0.0001         ***
+    pct_decel_time       0.119   0.0002         ***
+ pct_time_high_rpm      -0.102   0.0015          **
+     speed_std_kmh      -0.090   0.0050          **
+           rpm_max      -0.068   0.0341           *
+hard_acc_per_100km       0.056   0.0802            
+         acc_max_g       0.005   0.8712            
 
 [7] Linear Regression – interpretable baseline
   Samples used: 967
-  5-fold CV  R²  : 0.223 ± 0.055
-  5-fold CV  MAE : 2.217 ± 0.472 L/100km
+  Grouped-by-vehicle CV  R²  : 0.205 ± 0.153
+  Grouped-by-vehicle CV  MAE : 2.304 ± 0.471 L/100km
   Standardised coefficients:
-    stop_go_events            +1.2927
-    hard_brk_count            -1.1711
-    idle_frac                 +1.0145
-    acc_std_g                 +0.8705
-    hard_acc_count            +0.7715
-    speed_std_kmh             -0.6240
-    rpm_mean                  -0.5460
-    speed_mean_kmh            +0.4892
+    stop_go_per_km            +1.5992
+    speed_mean_kmh            +0.9153
+    idle_frac                 +0.8146
+    rpm_mean                  -0.8039
+    acc_std_g                 +0.5295
+    speed_std_kmh             -0.4069
+    hard_acc_per_100km        -0.3659
+    hard_brk_per_100km        -0.1599
 
 [8] Gradient Boosting – feature importance
-  5-fold CV  R²  : 0.255 ± 0.204
+  Samples used: 967
+  Grouped-by-vehicle CV  R²  : 0.197 ± 0.123
   Feature importances (top 10):
-speed_mean_kmh    0.2099
-acc_std_g         0.1686
-rpm_mean          0.1498
-acc_max_g         0.0742
-acc_mean_g        0.0587
-hard_brk_count    0.0556
-rpm_std           0.0510
-speed_std_kmh     0.0313
-pct_decel_time    0.0241
-speed_max_kmh     0.0209
+rpm_mean          0.2023
+speed_mean_kmh    0.1559
+rpm_std           0.0909
+acc_std_g         0.0507
+pct_accel_time    0.0507
+load_std_pct      0.0445
+acc_mean_g        0.0422
+dec_max_g         0.0412
+stop_go_per_km    0.0405
+speed_std_kmh     0.0399
+
+[9] Within-vehicle model: log(fuel relative to the vehicle's median)
+  Trips: 816 from 83 vehicles (>= 5 trips each)
+
+  Spec: behaviour only   (within-vehicle R² = 0.614)
+    % change in fuel per +1 SD (95% CI), cluster-robust p
+    stop_go_per_km           +8.4%  [ +7.1,  +9.7]  p=0.000
+    idle_frac                +4.9%  [ +3.4,  +6.4]  p=0.000
+    hard_acc_per_100km       +0.4%  [ -0.5,  +1.2]  p=0.396
+    hard_brk_per_100km       +1.0%  [ +0.2,  +1.8]  p=0.012
+    acc_std_g                +1.7%  [ +0.6,  +2.8]  p=0.003
+
+  Spec: behaviour + average-speed control   (within-vehicle R² = 0.623)
+    % change in fuel per +1 SD (95% CI), cluster-robust p
+    stop_go_per_km           +7.4%  [ +6.0,  +8.8]  p=0.000
+    idle_frac                +3.9%  [ +2.5,  +5.4]  p=0.000
+    hard_acc_per_100km       +0.4%  [ -0.4,  +1.3]  p=0.343
+    hard_brk_per_100km       +1.2%  [ +0.4,  +2.0]  p=0.002
+    acc_std_g                +1.2%  [ +0.1,  +2.4]  p=0.027
+    speed_mean_kmh           -2.2%  [ -3.6,  -0.8]  p=0.002
+
+  Spec: behaviour + speed + log-distance controls   (within-vehicle R² = 0.623)
+    % change in fuel per +1 SD (95% CI), cluster-robust p
+    stop_go_per_km           +7.4%  [ +6.0,  +8.8]  p=0.000
+    idle_frac                +3.9%  [ +2.5,  +5.4]  p=0.000
+    hard_acc_per_100km       +0.4%  [ -0.4,  +1.2]  p=0.344
+    hard_brk_per_100km       +1.2%  [ +0.4,  +2.0]  p=0.002
+    acc_std_g                +1.2%  [ +0.1,  +2.3]  p=0.027
+    speed_mean_kmh           -2.1%  [ -3.5,  -0.8]  p=0.003
+    log_distance_km          -0.2%  [ -1.0,  +0.6]  p=0.669

@@ -34,10 +34,11 @@ import seaborn as sns
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import GroupKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
+import statsmodels.api as sm
 
 warnings.filterwarnings("ignore")
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
@@ -46,19 +47,19 @@ sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
 SPEED_FEATS  = ["speed_mean_kmh", "speed_std_kmh", "speed_max_kmh",
                 "pct_time_over_80", "pct_time_over_110"]
 ACC_FEATS    = ["acc_mean_g", "acc_std_g", "acc_max_g", "dec_max_g",
-                "hard_acc_count", "hard_brk_count",
+                "hard_acc_per_100km", "hard_brk_per_100km",
                 "pct_accel_time", "pct_decel_time", "pct_cruise_time"]
 RPM_FEATS    = ["rpm_mean", "rpm_std", "rpm_max", "pct_time_high_rpm"]
 LOAD_FEATS   = ["load_mean_pct", "load_std_pct"]
-BEHAV_FEATS  = ["idle_frac", "stop_go_events"]
+BEHAV_FEATS  = ["idle_frac", "stop_go_per_km"]
 TARGET       = "l_per_100km"
 
 ALL_NUM_FEATS = SPEED_FEATS + ACC_FEATS + RPM_FEATS + LOAD_FEATS + BEHAV_FEATS
 
 # Features to highlight in pairplot / regression (interpretable, complete)
 KEY_FEATS = ["speed_mean_kmh", "speed_std_kmh", "acc_std_g",
-             "hard_acc_count", "hard_brk_count",
-             "rpm_mean", "idle_frac", "stop_go_events"]
+             "hard_acc_per_100km", "hard_brk_per_100km",
+             "rpm_mean", "idle_frac", "stop_go_per_km"]
 
 
 def log(msg, lines):
@@ -119,8 +120,8 @@ def plot_hard_events(df, figdir):
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     for ax, col, label in zip(
         axes,
-        ["hard_acc_count", "hard_brk_count"],
-        ["Hard Acceleration Events", "Hard Braking Events"],
+        ["hard_acc_per_100km", "hard_brk_per_100km"],
+        ["Hard Acceleration Events (per 100 km)", "Hard Braking Events (per 100 km)"],
     ):
         sub = df[[col, TARGET]].dropna()
         r, p = stats.pearsonr(sub[col], sub[TARGET])
@@ -214,11 +215,17 @@ def linear_regression(df, lines):
         ("scal",  StandardScaler()),
         ("reg",   LinearRegression()),
     ])
-    cv_r2 = cross_val_score(pipe, sub[feats], sub[TARGET], cv=5, scoring="r2")
-    cv_mae = cross_val_score(pipe, sub[feats], sub[TARGET], cv=5,
-                             scoring="neg_mean_absolute_error")
-    log(f"  5-fold CV  R²  : {cv_r2.mean():.3f} ± {cv_r2.std():.3f}", lines)
-    log(f"  5-fold CV  MAE : {-cv_mae.mean():.3f} ± {cv_mae.std():.3f} L/100km", lines)
+
+    # Grouped CV: all trips from a vehicle stay in the same fold, so the
+    # model is always tested on vehicles it has never seen.
+    groups = df.loc[sub.index, "veh_id"]
+    cv = GroupKFold(n_splits=min(5, groups.nunique()))
+    cv_r2 = cross_val_score(pipe, sub[feats], sub[TARGET], cv=cv,
+                            groups=groups, scoring="r2")
+    cv_mae = cross_val_score(pipe, sub[feats], sub[TARGET], cv=cv,
+                             groups=groups, scoring="neg_mean_absolute_error")
+    log(f"  Grouped-by-vehicle CV  R²  : {cv_r2.mean():.3f} ± {cv_r2.std():.3f}", lines)
+    log(f"  Grouped-by-vehicle CV  MAE : {-cv_mae.mean():.3f} ± {cv_mae.std():.3f} L/100km", lines)
 
     pipe.fit(sub[feats], sub[TARGET])
     coefs = dict(zip(feats, pipe.named_steps["reg"].coef_))
@@ -232,7 +239,11 @@ def linear_regression(df, lines):
 def gbm_importance(df, figdir, lines):
     log("\n[8] Gradient Boosting – feature importance", lines)
     feats = [c for c in ALL_NUM_FEATS if c in df.columns]
-    sub = df[feats + [TARGET]].dropna()
+
+    # Only drop rows with a missing target. Missing feature values (e.g. engine
+    # load, ~19% NaN) are handled by the imputer instead of silently removing trips.
+    sub = df[feats + [TARGET]].dropna(subset=[TARGET])
+    log(f"  Samples used: {len(sub):,}", lines)
 
     pipe = Pipeline([
         ("imp",  SimpleImputer(strategy="median")),
@@ -240,8 +251,13 @@ def gbm_importance(df, figdir, lines):
                                            learning_rate=0.05,
                                            subsample=0.8, random_state=42)),
     ])
-    cv_r2 = cross_val_score(pipe, sub[feats], sub[TARGET], cv=5, scoring="r2")
-    log(f"  5-fold CV  R²  : {cv_r2.mean():.3f} ± {cv_r2.std():.3f}", lines)
+
+    # Grouped CV: the model is always tested on vehicles it has not seen.
+    groups = df.loc[sub.index, "veh_id"]
+    cv = GroupKFold(n_splits=min(5, groups.nunique()))
+    cv_r2 = cross_val_score(pipe, sub[feats], sub[TARGET], cv=cv,
+                            groups=groups, scoring="r2")
+    log(f"  Grouped-by-vehicle CV  R²  : {cv_r2.mean():.3f} ± {cv_r2.std():.3f}", lines)
 
     pipe.fit(sub[feats], sub[TARGET])
     imp = pd.Series(pipe.named_steps["gbm"].feature_importances_, index=feats)
@@ -252,7 +268,7 @@ def gbm_importance(df, figdir, lines):
     ax.set(title="Gradient Boosting – Feature Importances",
            xlabel="Relative Importance")
     fig.tight_layout()
-    save(fig, os.path.join(figdir, "10_gbm_feature_importance.png"))
+    save(fig, os.path.join(figdir, "10b_gbm_feature_importance.png"))
 
     log("  Feature importances (top 10):", lines)
     log(imp.sort_values(ascending=False).head(10).round(4).to_string(), lines)
@@ -273,6 +289,42 @@ def plot_actual_vs_pred(pipe, sub, feats, figdir):
     fig.tight_layout()
     save(fig, os.path.join(figdir, "10_regression_actual_vs_pred.png"))
 
+WITHIN_BEHAV = ["stop_go_per_km", "idle_frac", "hard_acc_per_100km",
+                "hard_brk_per_100km", "acc_std_g"]
+WITHIN_CTRL  = ["speed_mean_kmh"]
+
+
+# ── 11. within-vehicle (fixed-effects) model ────────────────────────────────
+def within_vehicle_model(df, lines):
+    log("\n[9] Within-vehicle model: log(fuel relative to the vehicle's median)", lines)
+    all_cols = WITHIN_BEHAV + WITHIN_CTRL
+    sub = df.dropna(subset=["fuel_rel_vehicle"] + all_cols).copy()
+    sub["log_distance_km"] = np.log(sub["distance_km"])
+    log(f"  Trips: {len(sub):,} from {sub['veh_id'].nunique()} vehicles "
+        f"(>= 5 trips each)", lines)
+
+    veh = sub["veh_id"]
+    y = np.log(sub["fuel_rel_vehicle"])
+    y = y - y.groupby(veh).transform("mean")          # remove vehicle effect
+
+    specs = {
+        "behaviour only": WITHIN_BEHAV,
+        "behaviour + average-speed control": all_cols,
+        "behaviour + speed + log-distance controls": all_cols + ["log_distance_km"],
+    }
+    for name, cols in specs.items():
+        X = sub[cols] - sub.groupby("veh_id")[cols].transform("mean")
+        X = X / X.std()                               # effect per +1 within-vehicle SD
+        res = sm.OLS(y, X).fit(cov_type="cluster", cov_kwds={"groups": veh})
+        ci = res.conf_int()
+        log(f"\n  Spec: {name}   (within-vehicle R² = {res.rsquared:.3f})", lines)
+        log("    % change in fuel per +1 SD (95% CI), cluster-robust p", lines)
+        for c in cols:
+            pct = (np.exp(res.params[c]) - 1) * 100
+            lo = (np.exp(ci.loc[c, 0]) - 1) * 100
+            hi = (np.exp(ci.loc[c, 1]) - 1) * 100
+            log(f"    {c:<22} {pct:+6.1f}%  [{lo:+5.1f}, {hi:+5.1f}]  "
+                f"p={res.pvalues[c]:.3f}", lines)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -298,6 +350,7 @@ def main():
     pipe, sub, feats = linear_regression(df, lines)
     plot_actual_vs_pred(pipe, sub, feats, figdir)
     gbm_imp = gbm_importance(df, figdir, lines)
+    within_vehicle_model(df, lines)
 
     with open(os.path.join(args.report_dir, "eda_summary.txt"), "w") as fh:
         fh.write("\n".join(lines) + "\n")
