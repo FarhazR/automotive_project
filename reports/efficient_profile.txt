@@ -1,0 +1,14 @@
+=== FUEL-EFFICIENT DRIVING PROFILE ===
+
+Built from 242 trips (L/100km ≤ 8.29)
+Mean fuel consumption: 7.34 ± 0.73 L/100km
+
+speed_mean_kmh            mean=47.209  p25=36.516  p75=53.291  direction=higher
+speed_std_kmh             mean=23.778  p25=20.122  p75=25.559  direction=lower
+acc_std_g                 mean=0.183  p25=0.145  p75=0.222  direction=lower
+hard_acc_count            mean=19.326  p25=10.000  p75=24.750  direction=lower
+hard_brk_count            mean=23.132  p25=13.000  p75=30.000  direction=lower
+rpm_mean                  mean=1528.978  p25=1332.018  p75=1680.613  direction=higher
+idle_frac                 mean=0.150  p25=0.077  p75=0.217  direction=lower
+stop_go_events            mean=3.384  p25=2.000  p75=5.000  direction=lower
+acc_max_g                 mean=1.001  p25=0.708  p75=1.143  direction=lower

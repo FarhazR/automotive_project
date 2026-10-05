@@ -1,0 +1,17 @@
+=== CLUSTER PROFILES ===
+k = 3
+Cluster → Style: {1: 'Efficient', 2: 'Moderate', 0: 'Aggressive'}
+
+Mean feature values per cluster:
+         speed_mean_kmh  rpm_mean  stop_go_events  idle_frac  acc_std_g  hard_acc_count  hard_brk_count  acc_max_g  l_per_100km  duration_min  distance_km  avg_speed_kmh
+cluster                                                                                                                                                                  
+0                32.068  1293.324          10.587      0.261      0.260          55.430          55.102      2.149       13.094        17.534        8.389         30.658
+1                62.567  1764.087           1.931      0.080      0.183          20.423          20.995      1.156        8.726         9.487       10.328         62.764
+2                34.988  1337.169           5.145      0.231      0.179          19.713          22.271      1.067       10.399        10.346        5.515         33.327
+
+Cluster sizes & fuel:
+               trips  median_l100  mean_l100
+driving_style                               
+Aggressive       235        12.62      13.09
+Efficient        189         8.50       8.73
+Moderate         543         9.65      10.40

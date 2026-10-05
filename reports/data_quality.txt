@@ -1,0 +1,48 @@
+Static table columns: ['VehId', 'Vehicle Type', 'Vehicle Class', 'Engine Configuration & Displacement', 'Transmission', 'Drive Wheels', 'Generalized_Weight']
+'Vehicle Type' values in static file: {'ICE': 264, 'HEV': 93}
+Vehicles kept (Vehicle Type == ICE): 264 of 357
+Loading 4 weekly file(s): ['VED_171101_week.csv', 'VED_171108_week.csv', 'VED_171115_week.csv', 'VED_171122_week.csv']
+
+=== DATA QUALITY REPORT (before cleaning) ===
+Rows: 1,332,021 | vehicles: 221 | trips: 2,139
+Missing values (% of rows):
+  day_num        0.0%
+  veh_id         0.0%
+  trip           0.0%
+  t_ms           0.0%
+  speed_kmh      0.1%
+  maf_gps       19.6%
+  rpm            0.1%
+  load_pct      20.8%
+  oat_c        100.0%
+  fuel_lph     100.0%
+  source_file    0.0%
+Duplicate (veh, trip, timestamp) rows: 0
+Invalid values - speed < 0 or > 250 km/h: 0
+Invalid values - rpm < 0 or > 8000: 0
+Invalid values - fuel rate < 0 or > 100 L/h: 0
+Invalid values - MAF < 0 or > 600 g/s: 0
+Vehicles with any Fuel Rate data: 0 of 221
+Vehicles with any MAF data (fallback): 169 of 221
+
+=== CLEANING (FR-03) ===
+Dropped duplicate rows: 0
+
+=== TRIP TABLE ===
+Trips before filtering: 2,139
+  after duration >= 5 min: 1,311 (dropped 828)
+  after distance >= 2 km: 971 (dropped 340)
+  after fuel coverage >= 0.9: 971 (dropped 0)
+  after L/100km between 1 and 40 (plausibility): 967 (dropped 4)
+
+Trips kept: 967 from 153 vehicle(s)
+L/100km summary of kept trips:
+count    967.00
+mean      10.73
+std        3.88
+min        4.57
+25%        8.29
+50%        9.88
+75%       12.34
+max       39.00
+Trips relying on MAF-estimated fuel for >50% of their time: 967

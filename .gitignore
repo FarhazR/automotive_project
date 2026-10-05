@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and notebook checkpoints
+*.log
+.ipynb_checkpoints/
+
+# Large project datasets: keep local, don't push to GitHub yet
+data/raw/
+data/processed/
+data/static/
