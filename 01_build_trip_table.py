@@ -95,31 +95,83 @@ def load_static(path, engine_type, report):
     return ice
 
 
+
 def load_dynamic(raw_dir, n_weeks, veh_ids, report):
-    files = sorted(glob.glob(os.path.join(raw_dir, "**", "VED_*_week.csv"), recursive=True))
+    files = sorted(
+        glob.glob(
+            os.path.join(raw_dir, "**", "VED_*_week.csv"),
+            recursive=True,
+        )
+    )
+
     if not files:
         sys.exit(f"ERROR: no VED_*_week.csv files found under {raw_dir}")
+
     if n_weeks:
         files = files[:n_weeks]
-    log(f"Loading {len(files)} weekly file(s): {[os.path.basename(f) for f in files]}", report)
+
+    log(
+        f"Loading {len(files)} weekly file(s): "
+        f"{[os.path.basename(f) for f in files]}",
+        report,
+    )
 
     frames = []
+
+    required = {"day_num", "veh_id", "trip", "t_ms", "speed_kmh"}
+    optional = {
+        "maf_gps", "rpm", "load_pct", "oat_c", "fuel_lph"
+    }
+
     for f in files:
         header = pd.read_csv(f, nrows=0).columns
         mapping = rename_columns(header)
-        wanted = [c for c in mapping if mapping[c] in
-                  ("day_num", "veh_id", "trip", "t_ms", "speed_kmh", "maf_gps",
-                   "rpm", "load_pct", "oat_c", "fuel_lph")]
+
+        available = set(mapping.values())
+        missing = required - available
+
+        if missing:
+            sys.exit(
+                f"ERROR: {os.path.basename(f)} is missing required "
+                f"columns after header mapping: {sorted(missing)}. "
+                f"Available mapped columns: {sorted(available)}"
+            )
+
+        wanted = [
+            col for col in mapping
+            if mapping[col] in required | optional
+        ]
+
         df = pd.read_csv(f, usecols=wanted).rename(columns=mapping)
-        df = df[df["veh_id"].isin(veh_ids)]
+
+        # Convert numeric fields explicitly. Invalid text becomes NaN
+        # and will be handled by the cleaning stage.
+        numeric_cols = [
+            "day_num", "trip", "t_ms", "speed_kmh",
+            "maf_gps", "rpm", "load_pct", "oat_c", "fuel_lph",
+        ]
+
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # Keep only vehicles selected from the static vehicle table.
+        df = df[df["veh_id"].isin(veh_ids)].copy()
+
         df["source_file"] = os.path.basename(f)
         frames.append(df)
+
+    if not frames:
+        sys.exit("ERROR: no weekly files were available to load.")
+
     data = pd.concat(frames, ignore_index=True)
-    for col in ("maf_gps", "rpm", "load_pct", "oat_c", "fuel_lph"):
+
+    # Optional sensor columns may be absent in some weekly files.
+    for col in optional:
         if col not in data.columns:
             data[col] = np.nan
-    return data
 
+    return data
 
 def quality_report(df, report):
     log("\n=== DATA QUALITY REPORT (before cleaning) ===", report)
@@ -149,21 +201,67 @@ def quality_report(df, report):
     log(f"Vehicles with any MAF data (fallback): {(has_maf > 0).sum()} of {len(has_maf)}", report)
 
 
+
 def clean(df, report):
     log("\n=== CLEANING (FR-03) ===", report)
+
+    df = df.copy()
+
+    # Ensure key numeric fields have consistent types.
+    for col in (
+        "day_num", "trip", "t_ms", "speed_kmh",
+        "maf_gps", "rpm", "load_pct", "oat_c", "fuel_lph",
+    ):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # A row without a vehicle, trip, or timestamp cannot be assigned
+    # reliably to a trip or integrated in chronological order.
     n0 = len(df)
-    df = df.drop_duplicates(subset=["veh_id", "trip", "t_ms"]).copy()
-    log(f"Dropped duplicate rows: {n0 - len(df):,}", report)
+    valid_keys = df[["veh_id", "trip", "t_ms"]].notna().all(axis=1)
+    valid_keys &= np.isfinite(df["t_ms"])
 
-    # Invalid values become NaN (the row is kept; only that signal is ignored)
-    df.loc[(df["speed_kmh"] < 0) | (df["speed_kmh"] > SPEED_MAX_KMH), "speed_kmh"] = np.nan
-    df.loc[(df["rpm"] < 0) | (df["rpm"] > RPM_MAX), "rpm"] = np.nan
-    df.loc[(df["fuel_lph"] < 0) | (df["fuel_lph"] > FUEL_MAX_LPH), "fuel_lph"] = np.nan
-    df.loc[(df["maf_gps"] < 0) | (df["maf_gps"] > MAF_MAX_GPS), "maf_gps"] = np.nan
+    df = df.loc[valid_keys].copy()
+    log(f"Dropped rows with invalid trip keys/timestamps: {n0 - len(df):,}", report)
 
-    df = df.sort_values(["veh_id", "trip", "t_ms"]).reset_index(drop=True)
+    # Remove duplicate samples.
+    n1 = len(df)
+    df = df.drop_duplicates(
+        subset=["veh_id", "trip", "t_ms"]
+    ).copy()
+    log(f"Dropped duplicate rows: {n1 - len(df):,}", report)
+
+    # Invalid sensor values become NaN; retain the rest of the row.
+    df.loc[
+        (df["speed_kmh"] < 0) | (df["speed_kmh"] > SPEED_MAX_KMH),
+        "speed_kmh",
+    ] = np.nan
+
+    df.loc[
+        (df["rpm"] < 0) | (df["rpm"] > RPM_MAX),
+        "rpm",
+    ] = np.nan
+
+    df.loc[
+        (df["fuel_lph"] < 0) | (df["fuel_lph"] > FUEL_MAX_LPH),
+        "fuel_lph",
+    ] = np.nan
+
+    df.loc[
+        (df["maf_gps"] < 0) | (df["maf_gps"] > MAF_MAX_GPS),
+        "maf_gps",
+    ] = np.nan
+
+    df = df.sort_values(
+        ["veh_id", "trip", "t_ms"]
+    ).reset_index(drop=True)
 
     # Fuel rate: use measured/derived Fuel Rate; fall back to MAF estimate.
+    # APPROXIMATION:
+    # MAF-derived fuel rate assumes stoichiometric gasoline combustion
+    # (AFR=14.7 and density=745 g/L). This is not a calibrated measurement.
+    # Results relying on this estimate must be identified and interpreted
+    # cautiously. Verify fuel type and suitability before using this estimate.
     maf_est = df["maf_gps"] / AFR / GASOLINE_G_PER_L * 3600.0   # L/h
     df["fuel_source"] = np.where(df["fuel_lph"].notna(), "fuel_rate",
                                  np.where(maf_est.notna(), "maf_estimate", "none"))
@@ -177,51 +275,131 @@ def clean(df, report):
     return df
 
 
+
 def build_trips(df, static, min_km, min_min, min_cov, report):
     log("\n=== TRIP TABLE ===", report)
+
     df = df.copy()
+
+    # Integrate only intervals with valid speed and fuel rate.
     both = df["speed_kmh"].notna() & df["fuel_lph_used"].notna()
-    df["dt_both_s"] = np.where(both, df["dt_valid_s"], 0.0)
-    df["dist_km"] = np.where(both, df["speed_kmh"] * df["dt_valid_s"] / 3600.0, 0.0)
-    df["fuel_l"] = np.where(both, df["fuel_lph_used"] * df["dt_valid_s"] / 3600.0, 0.0)
-    df["maf_time_s"] = np.where(both & (df["fuel_source"] == "maf_estimate"),
-                                df["dt_valid_s"], 0.0)
+
+    df["dt_both_s"] = np.where(
+        both, df["dt_valid_s"], 0.0
+    )
+
+    df["dist_km"] = np.where(
+        both,
+        df["speed_kmh"] * df["dt_valid_s"] / 3600.0,
+        0.0,
+    )
+
+    df["fuel_l"] = np.where(
+        both,
+        df["fuel_lph_used"] * df["dt_valid_s"] / 3600.0,
+        0.0,
+    )
+
+    df["maf_time_s"] = np.where(
+        both & (df["fuel_source"] == "maf_estimate"),
+        df["dt_valid_s"],
+        0.0,
+    )
 
     g = df.groupby(["veh_id", "trip"], sort=False)
+
     trips = g.agg(
         n_samples=("t_ms", "size"),
         day_num=("day_num", "min"),
+        start_t_ms=("t_ms", "min"),
+        end_t_ms=("t_ms", "max"),
         dur_total_s=("dt_valid_s", "sum"),
         dur_both_s=("dt_both_s", "sum"),
         distance_km=("dist_km", "sum"),
         fuel_l=("fuel_l", "sum"),
         maf_time_s=("maf_time_s", "sum"),
     ).reset_index()
-    trips["duration_min"] = trips["dur_total_s"] / 60.0
-    trips["fuel_coverage"] = trips["dur_both_s"] / trips["dur_total_s"].replace(0, np.nan)
-    trips["pct_fuel_from_maf"] = 100 * trips["maf_time_s"] / trips["dur_both_s"].replace(0, np.nan)
-    trips["avg_speed_kmh"] = trips["distance_km"] / (trips["dur_both_s"] / 3600.0).replace(0, np.nan)
-    trips["l_per_100km"] = 100.0 * trips["fuel_l"] / trips["distance_km"].replace(0, np.nan)
+
+    # Wall-clock elapsed duration includes gaps between observations.
+    trips["elapsed_s"] = (
+        trips["end_t_ms"] - trips["start_t_ms"]
+    ) / 1000.0
+
+    trips["duration_min"] = trips["elapsed_s"] / 60.0
+
+    # Fraction of elapsed time covered by intervals that can be
+    # integrated without crossing a long sample gap.
+    trips["integration_coverage"] = (
+        trips["dur_total_s"]
+        / trips["elapsed_s"].replace(0, np.nan)
+    )
+
+    # Fraction of elapsed time with both speed and fuel available
+    # in intervals that are eligible for integration.
+    trips["fuel_coverage"] = (
+        trips["dur_both_s"]
+        / trips["elapsed_s"].replace(0, np.nan)
+    )
+
+    trips["pct_fuel_from_maf"] = (
+        100.0 * trips["maf_time_s"]
+        / trips["dur_both_s"].replace(0, np.nan)
+    )
+
+    trips["avg_speed_kmh"] = (
+        trips["distance_km"]
+        / (trips["dur_both_s"] / 3600.0).replace(0, np.nan)
+    )
+
+    trips["l_per_100km"] = (
+        100.0 * trips["fuel_l"]
+        / trips["distance_km"].replace(0, np.nan)
+    )
 
     n_all = len(trips)
     log(f"Trips before filtering: {n_all:,}", report)
+
     steps = [
-        (f"duration >= {min_min:g} min", trips["duration_min"] >= min_min),
-        (f"distance >= {min_km:g} km", trips["distance_km"] >= min_km),
-        (f"fuel coverage >= {min_cov:g}", trips["fuel_coverage"] >= min_cov),
-        ("L/100km between 1 and 40 (plausibility)", trips["l_per_100km"].between(1, 40)),
+        (
+            f"duration >= {min_min:g} min",
+            trips["duration_min"] >= min_min,
+        ),
+        (
+            f"distance >= {min_km:g} km",
+            trips["distance_km"] >= min_km,
+        ),
+        (
+            f"fuel coverage >= {min_cov:g}",
+            trips["fuel_coverage"] >= min_cov,
+        ),
+        (
+            "L/100km between 1 and 40 (plausibility)",
+            trips["l_per_100km"].between(1, 40),
+        ),
     ]
+
     mask = pd.Series(True, index=trips.index)
+
     for name, cond in steps:
         before = int(mask.sum())
         mask &= cond.fillna(False)
-        log(f"  after {name}: {int(mask.sum()):,} (dropped {before - int(mask.sum()):,})", report)
+        log(
+            f"  after {name}: {int(mask.sum()):,} "
+            f"(dropped {before - int(mask.sum()):,})",
+            report,
+        )
+
     kept = trips[mask].copy()
 
-    # Attach static vehicle info (class, displacement, weight, ...)
-    kept = kept.merge(static.rename(columns={"VehId": "veh_id"}), on="veh_id", how="left")
-    return kept
+    # Attach static vehicle information (class, displacement, weight, ...).
+    kept = kept.merge(
+        static.rename(columns={"VehId": "veh_id"}),
+        on="veh_id",
+        how="left",
+        validate="many_to_one",
+    )
 
+    return kept
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
@@ -254,8 +432,8 @@ def main():
     if not trips.empty:
         log("L/100km summary of kept trips:", report)
         log(trips["l_per_100km"].describe().round(2).to_string(), report)
-        log(f"Trips relying on MAF-estimated fuel for >50% of their time: "
-            f"{int((trips['pct_fuel_from_maf'] > 50).sum()):,}", report)
+        log("Trips relying on MAF-estimated fuel for >50% of covered fuel intervals: "
+            f"{(trips['pct_fuel_from_maf'] > 50).sum():,}", report)
 
     trips.to_csv(os.path.join(args.out_dir, "trips.csv"), index=False)
     keep_keys = trips[["veh_id", "trip"]]

@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
 """
-Step 5 & 6 – Fuel-Efficient Driving Profile + Recommendation Engine
+Step 5 & 6 - Fuel-efficient reference profile + recommendation engine
 (SRS FR-07, FR-08)
 
 Reads:
   data/processed/features_clustered.csv
 
 Writes:
-  data/processed/efficient_profile.json   – the reference profile
+  data/processed/efficient_profile.json
   reports/figures/16_efficient_profile.png
   reports/figures/17_recommendation_demo.png
   reports/efficient_profile.txt
-  src/recommender.py                       – importable recommendation module
-"""
+  reports/demo_recommendations.txt
 
+Method
+  1. Fit the within-vehicle model (log fuel relative to each vehicle's own
+     median) to estimate how much each behaviour feature is associated with
+     fuel use, controlling for average speed. Features whose 95% CI is not
+     clearly positive are NOT recommended.
+  2. Reference profile = trips in the bottom 25% of fuel_rel_vehicle
+     (efficient for their own vehicle), so vehicle type does not leak in.
+"""
 import argparse
 import json
 import os
-import textwrap
+import sys
 import warnings
 
 import numpy as np
@@ -26,333 +33,171 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
+import statsmodels.api as sm
+
+sys.path.insert(0, "src")
+from recommender import (FEAT_LABELS, format_report,  # noqa: E402
+                         generate_recommendations)
 
 warnings.filterwarnings("ignore")
 sns.set_theme(style="whitegrid", font_scale=1.1)
 
-SEED = 42
-EFFICIENT_LABEL = "Efficient"
-
-# Features used in the profile and recommendations
-PROFILE_FEATS = [
-    "speed_mean_kmh",
-    "speed_std_kmh",
-    "acc_std_g",
-    "hard_acc_count",
-    "hard_brk_count",
-    "rpm_mean",
-    "idle_frac",
-    "stop_go_events",
-    "acc_max_g",
-]
-
-# Human-readable labels for display
-FEAT_LABELS = {
-    "speed_mean_kmh"  : "Avg Speed (km/h)",
-    "speed_std_kmh"   : "Speed Variability (km/h std)",
-    "acc_std_g"       : "Accel. Variability (g std)",
-    "hard_acc_count"  : "Hard Acceleration Events",
-    "hard_brk_count"  : "Hard Braking Events",
-    "rpm_mean"        : "Mean RPM",
-    "idle_frac"       : "Idle Fraction",
-    "stop_go_events"  : "Stop-and-Go Events",
-    "acc_max_g"       : "Peak Acceleration (g)",
-}
-
-# Direction: 'lower' means lower values are more efficient
-DIRECTION = {
-    "speed_mean_kmh"  : "higher",   # higher steady speed → more efficient (highway effect)
-    "speed_std_kmh"   : "lower",
-    "acc_std_g"       : "lower",
-    "hard_acc_count"  : "lower",
-    "hard_brk_count"  : "lower",
-    "rpm_mean"        : "higher",   # higher RPM here reflects highway (efficient cluster)
-    "idle_frac"       : "lower",
-    "stop_go_events"  : "lower",
-    "acc_max_g"       : "lower",
-}
-
-# Thresholds: how far from the profile before flagging (in normalised units)
-# 0.5 = half a population std-dev away from profile mean
-FLAG_THRESHOLD = 0.5
+EFFICIENT_QUANTILE = 0.25
+# Behaviour features the data may support; the model decides which are used.
+CANDIDATE_FEATS = ["stop_go_per_km", "idle_frac", "hard_brk_per_100km",
+                   "hard_acc_per_100km", "acc_std_g"]
+# Controlled for in the model, never recommended (mostly reflects road type).
+CONTROL_FEATS = ["speed_mean_kmh"]
 
 
-# ── build profile ────────────────────────────────────────────────────────────
-def build_profile(df: pd.DataFrame) -> dict:
-    """
-    Profile = mean ± std of each feature across the top-25% most
-    fuel-efficient trips (lowest L/100km), regardless of cluster label.
-    Using the top quartile rather than just the Efficient cluster makes
-    the profile data-driven and robust to cluster boundary effects.
-    """
-    cutoff = df["l_per_100km"].quantile(0.25)
-    efficient = df[df["l_per_100km"] <= cutoff].copy()
-    print(f"  Profile built from {len(efficient):,} trips "
-          f"(L/100km ≤ {cutoff:.2f}, i.e. bottom 25%)")
+# -- 1. effect sizes from the within-vehicle model ---------------------------
+def estimate_effects(df: pd.DataFrame) -> dict:
+    cols = CANDIDATE_FEATS + CONTROL_FEATS
+    sub = df.dropna(subset=["fuel_rel_vehicle"] + cols).copy()
+    veh = sub["veh_id"]
+
+    y = np.log(sub["fuel_rel_vehicle"])
+    y = y - y.groupby(veh).transform("mean")
+    Xw = sub[cols] - sub.groupby("veh_id")[cols].transform("mean")
+    within_sd = Xw.std()
+    X = Xw / within_sd
+
+    res = sm.OLS(y, X).fit(cov_type="cluster", cov_kwds={"groups": veh})
+    ci = res.conf_int()
+    print(f"  Within-vehicle model: {len(sub):,} trips, "
+          f"{sub['veh_id'].nunique()} vehicles, R2={res.rsquared:.3f}")
+
+    effects = {}
+    for c in CANDIDATE_FEATS:
+        effects[c] = {
+            "coef_log_per_sd": float(res.params[c]),
+            "pct_per_sd":      float((np.exp(res.params[c]) - 1) * 100),
+            "ci_low_pct":      float((np.exp(ci.loc[c, 0]) - 1) * 100),
+            "ci_high_pct":     float((np.exp(ci.loc[c, 1]) - 1) * 100),
+            "p_value":         float(res.pvalues[c]),
+            "within_sd":       float(within_sd[c]),
+            "supported":       bool(ci.loc[c, 0] > 0),
+        }
+    return effects
+
+
+# -- 2. reference profile ----------------------------------------------------
+def build_profile(df: pd.DataFrame, effects: dict) -> dict:
+    rel = df["fuel_rel_vehicle"].dropna()
+    cutoff = float(rel.quantile(EFFICIENT_QUANTILE))
+    efficient = df[df["fuel_rel_vehicle"] <= cutoff]
+    print(f"  Reference profile: {len(efficient):,} trips from "
+          f"{efficient['veh_id'].nunique()} vehicles "
+          f"(relative fuel <= {cutoff:.3f}, bottom 25%)")
 
     profile = {}
-    for feat in PROFILE_FEATS:
-        if feat not in df.columns:
-            continue
+    for feat in CANDIDATE_FEATS:
         vals = efficient[feat].dropna()
+        pop_std = float(df[feat].dropna().std())
         profile[feat] = {
-            "mean"      : float(vals.mean()),
-            "std"       : float(vals.std()),
-            "p25"       : float(vals.quantile(0.25)),
-            "p75"       : float(vals.quantile(0.75)),
-            "direction" : DIRECTION.get(feat, "lower"),
+            "mean": float(vals.mean()),
+            "std": float(vals.std()),
+            "p25": float(vals.quantile(0.25)),
+            "p75": float(vals.quantile(0.75)),
+            "pop_std": pop_std if pop_std > 0 else 1.0,
+            "direction": "lower",
+            **effects[feat],
         }
-
-    # Population std (for normalising deviations in the recommender)
-    for feat in PROFILE_FEATS:
-        if feat in profile:
-            pop_std = df[feat].dropna().std()
-            profile[feat]["pop_std"] = float(pop_std) if pop_std > 0 else 1.0
-
     profile["_meta"] = {
-        "n_trips"          : int(len(efficient)),
-        "l100km_threshold" : float(cutoff),
-        "l100km_mean"      : float(efficient["l_per_100km"].mean()),
-        "l100km_std"       : float(efficient["l_per_100km"].std()),
+        "n_trips": int(len(efficient)),
+        "n_vehicles": int(efficient["veh_id"].nunique()),
+        "rel_fuel_threshold": cutoff,
+        "rel_fuel_mean": float(efficient["fuel_rel_vehicle"].mean()),
+        "recommended_features": [f for f in CANDIDATE_FEATS
+                                 if effects[f]["supported"]],
     }
     return profile
 
 
-# ── plot profile ──────────────────────────────────────────────────────────────
-def plot_profile_comparison(df: pd.DataFrame, profile: dict, figdir: str):
-    feats = [f for f in PROFILE_FEATS if f in df.columns and f in profile]
-    styles = ["Efficient", "Moderate", "Aggressive"]
+# -- 3. plots -----------------------------------------------------------------
+def pattern_order(df):
+    return (df.dropna(subset=["style_rank"])
+              .sort_values("style_rank")["driving_style"].unique().tolist())
 
-    means = {s: df[df["driving_style"] == s][feats].mean() for s in styles
-             if s in df["driving_style"].values}
-    prof_means = pd.Series({f: profile[f]["mean"] for f in feats})
 
+def plot_profile_comparison(df, profile, figdir):
+    feats = [f for f in CANDIDATE_FEATS if f in profile]
+    means = {s: df[df["driving_style"] == s][feats].mean()
+             for s in pattern_order(df)}
+    means["Efficient reference\n(bottom 25% relative fuel)"] = pd.Series(
+        {f: profile[f]["mean"] for f in feats})
+
+    colors = ["#6ACC65", "#D65F5F", "#4878CF", "#B47CC7", "#FF8C00"]
     x = np.arange(len(feats))
-    width = 0.2
-    colors = {"Efficient": "#6ACC65", "Moderate": "#4878CF",
-              "Aggressive": "#D65F5F", "Profile (top 25%)": "#FF8C00"}
+    width = 0.8 / len(means)
 
-    fig, ax = plt.subplots(figsize=(14, 6))
-    for i, (label, series) in enumerate(
-        list(means.items()) + [("Profile (top 25%)", prof_means)]
-    ):
-        # Normalise by population std for comparable display
+    fig, ax = plt.subplots(figsize=(13, 6))
+    for i, (label, series) in enumerate(means.items()):
         norm = pd.Series({f: series[f] / profile[f]["pop_std"] for f in feats})
         ax.bar(x + i * width, norm, width, label=label,
-               color=colors.get(label, "#aaa"), alpha=0.85)
-
-    ax.set_xticks(x + width * 1.5)
+               color=colors[i % len(colors)], alpha=0.85)
+    ax.set_xticks(x + width * (len(means) - 1) / 2)
     ax.set_xticklabels([FEAT_LABELS.get(f, f) for f in feats],
-                       rotation=30, ha="right", fontsize=9)
-    ax.set(ylabel="Normalised value (÷ population std)",
-           title="Driving Style Profiles vs Fuel-Efficient Reference Profile")
+                       rotation=25, ha="right", fontsize=9)
+    ax.set(ylabel="Normalised value (/ population std)",
+           title="Trip Patterns vs Fuel-Efficient Reference Profile")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(os.path.join(figdir, "16_efficient_profile.png"),
-                dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  saved → {os.path.join(figdir, '16_efficient_profile.png')}")
+    path = os.path.join(figdir, "16_efficient_profile.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved -> {path}")
 
 
-# ── recommendation engine ─────────────────────────────────────────────────────
-def generate_recommendations(trip: pd.Series, profile: dict,
-                              flag_threshold: float = FLAG_THRESHOLD) -> list[dict]:
-    """
-    Compare one trip's features against the efficient profile.
-    Returns a list of recommendation dicts, sorted by severity.
-    Each dict has: feature, deviation, severity (0–1), message.
-    """
-    recs = []
-
-    MESSAGES = {
-        "stop_go_events": (
-            "Your trip had {val:.0f} stop-and-go events vs {ref:.0f} in efficient trips. "
-            "Frequent stopping and restarting burns significantly more fuel. "
-            "Where conditions allow, maintain a steady roll rather than coming to a complete stop."
-        ),
-        "idle_frac": (
-            "Your engine idled for {pct:.0f}% of trip time vs {ref_pct:.0f}% in efficient trips. "
-            "Extended idling wastes fuel with zero distance gain. "
-            "If stationary for more than ~60 seconds, switching off is worth considering."
-        ),
-        "hard_acc_count": (
-            "You recorded {val:.0f} hard acceleration events vs {ref:.0f} in efficient trips. "
-            "Rapid acceleration sharply increases fuel demand. "
-            "Gradual, progressive acceleration reduces fuel consumption and mechanical wear."
-        ),
-        "hard_brk_count": (
-            "You recorded {val:.0f} hard braking events vs {ref:.0f} in efficient trips. "
-            "Hard braking dissipates kinetic energy that cost fuel to build. "
-            "Anticipating traffic flow further ahead allows gentler deceleration."
-        ),
-        "acc_std_g": (
-            "Acceleration variability (std {val:.3f}g vs {ref:.3f}g) is elevated. "
-            "Smoother, more consistent throttle inputs are associated with lower fuel use. "
-            "Try to maintain even pressure on the accelerator and avoid surging."
-        ),
-        "speed_std_kmh": (
-            "Speed variability is higher than the efficient profile ({val:.1f} vs {ref:.1f} km/h std). "
-            "Maintaining a more consistent speed reduces the repeated acceleration cost. "
-            "On open roads, cruise control or conscious speed-steadying helps."
-        ),
-        "speed_mean_kmh": (
-            "Average trip speed ({val:.1f} km/h) is below the efficient profile ({ref:.1f} km/h). "
-            "This suggests mostly low-speed urban operation with high idle/stop overhead. "
-            "Where route choice is possible, roads with fewer traffic signals can improve efficiency."
-        ),
-        "rpm_mean": (
-            "Mean RPM ({val:.0f}) is lower than in efficient trips ({ref:.0f}). "
-            "In combination with low speed, this may indicate short urban trips where the engine "
-            "rarely reaches its efficient operating range. "
-            "Consolidating short trips where possible reduces per-km fuel cost."
-        ),
-        "acc_max_g": (
-            "Peak acceleration ({val:.2f}g vs {ref:.2f}g in efficient trips) is high. "
-            "Occasional aggressive inputs significantly raise instantaneous fuel demand. "
-            "A lighter right foot during the first few seconds of acceleration makes the largest difference."
-        ),
-    }
-
-    for feat, info in profile.items():
-        if feat.startswith("_") or feat not in trip.index:
+# -- 4. demo ------------------------------------------------------------------
+def demo_recommendations(df, profile, figdir, report_dir):
+    styles = pattern_order(df)
+    demo = {}
+    for style in styles:
+        sub = df[df["driving_style"] == style].dropna(subset=["fuel_rel_vehicle"])
+        if sub.empty:
             continue
-        val = trip[feat]
-        if pd.isna(val):
-            continue
+        idx = (sub["fuel_rel_vehicle"]
+               - sub["fuel_rel_vehicle"].median()).abs().idxmin()
+        demo[style] = sub.loc[idx]
 
-        ref_mean  = info["mean"]
-        pop_std   = info["pop_std"]
-        direction = info["direction"]
-
-        # Signed deviation in population-std units
-        # Positive deviation = trip is WORSE than profile in that feature's direction
-        if direction == "lower":
-            deviation = (val - ref_mean) / pop_std   # positive = worse (too high)
-        else:
-            deviation = (ref_mean - val) / pop_std   # positive = worse (too low)
-
-        if deviation < flag_threshold:
-            continue   # within acceptable range
-
-        severity = min(1.0, deviation / 2.0)   # cap at 1
-
-        if feat not in MESSAGES:
-            continue
-
-        # Format message with actual values
-        fmt_args = {"val": val, "ref": ref_mean,
-                    "pct": val * 100, "ref_pct": ref_mean * 100}
-        msg = MESSAGES[feat].format(**fmt_args)
-        recs.append({
-            "feature"  : feat,
-            "label"    : FEAT_LABELS.get(feat, feat),
-            "val"      : round(float(val), 3),
-            "ref_mean" : round(float(ref_mean), 3),
-            "deviation": round(float(deviation), 3),
-            "severity" : round(float(severity), 3),
-            "message"  : msg,
-        })
-
-    recs.sort(key=lambda r: r["severity"], reverse=True)
-    return recs
-
-
-def format_report(trip: pd.Series, recs: list[dict],
-                  profile: dict, cluster_label: str) -> str:
-    lines = [
-        "=" * 65,
-        "  DRIVING EFFICIENCY REPORT",
-        "=" * 65,
-        f"  Trip summary",
-        f"    Distance      : {trip.get('distance_km', '?'):.1f} km",
-        f"    Duration      : {trip.get('duration_min', '?'):.1f} min",
-        f"    Avg speed     : {trip.get('avg_speed_kmh', '?'):.1f} km/h",
-        f"    Fuel use      : {trip.get('l_per_100km', '?'):.2f} L/100 km",
-        f"    Driving style : {cluster_label}",
-        f"    Efficient ref : {profile['_meta']['l100km_mean']:.2f} L/100 km "
-        f"(top-25% trips)",
-        "-" * 65,
-    ]
-
-    if not recs:
-        lines.append("  ✓ No significant inefficiencies detected.")
-        lines.append("    This trip closely matches the efficient driving profile.")
-    else:
-        lines.append(f"  {len(recs)} recommendation(s), ranked by impact:\n")
-        for i, r in enumerate(recs, 1):
-            lines.append(f"  [{i}] {r['label']}  "
-                         f"(severity {r['severity']:.2f})")
-            for ln in textwrap.wrap(r["message"], width=60):
-                lines.append(f"      {ln}")
-            lines.append("")
-
-    lines.append("=" * 65)
-    lines.append(
-        "  Note: Recommendations are based on patterns observed in the\n"
-        "  VED dataset. Fuel consumption is also affected by vehicle\n"
-        "  type, road gradient, traffic, weather, and tyre condition.\n"
-        "  Results use MAF-estimated fuel (direct OBD fuel rate\n"
-        "  unavailable in this dataset)."
-    )
-    lines.append("=" * 65)
-    return "\n".join(lines)
-
-
-# ── demo: run recommender on sample trips ────────────────────────────────────
-def demo_recommendations(df: pd.DataFrame, profile: dict,
-                         figdir: str, report_dir: str):
-    # Pick one trip from each style for the demo
-    demo_trips = {}
-    for style in ["Aggressive", "Moderate", "Efficient"]:
-        subset = df[df["driving_style"] == style]
-        if subset.empty:
-            continue
-        # pick the median trip for that cluster (most representative)
-        median_idx = (subset["l_per_100km"] - subset["l_per_100km"].median()).abs().idxmin()
-        demo_trips[style] = subset.loc[median_idx]
-
-    all_reports = []
-    for style, trip in demo_trips.items():
+    reports = []
+    for style, trip in demo.items():
         recs = generate_recommendations(trip, profile)
-        report_text = format_report(trip, recs, profile, style)
-        all_reports.append(report_text)
-        print(f"\n{'─'*65}")
-        print(report_text)
+        text = format_report(trip, recs, profile, style)
+        reports.append(text)
+        print(f"\n{'-' * 65}\n{text}")
 
-    # Save demo reports
-    with open(os.path.join(report_dir, "demo_recommendations.txt"), "w") as fh:
-        fh.write("\n\n".join(all_reports))
-    print(f"\n  Saved: {report_dir}/demo_recommendations.txt")
+    path = os.path.join(report_dir, "demo_recommendations.txt")
+    with open(path, "w") as fh:
+        fh.write("\n\n".join(reports))
+    print(f"\n  Saved: {path}")
 
-    # ── bar chart: severity of each recommendation for the Aggressive demo ──
-    agg_trip = demo_trips.get("Aggressive")
-    if agg_trip is not None:
-        recs = generate_recommendations(agg_trip, profile)
-        if recs:
-            labels  = [r["label"] for r in recs]
-            sevs    = [r["severity"] for r in recs]
-            colors  = ["#D65F5F" if s > 0.6 else "#FFA500" if s > 0.35
-                       else "#6ACC65" for s in sevs]
-
-            fig, ax = plt.subplots(figsize=(10, 5))
-            bars = ax.barh(labels[::-1], sevs[::-1], color=colors[::-1])
-            ax.axvline(0.5, color="gray", linestyle="--", linewidth=1,
-                       label="Moderate threshold")
-            ax.set(xlabel="Severity (0 = fine, 1 = high impact)",
-                   title="Recommendation Severity – Sample Aggressive Trip")
-            ax.set_xlim(0, 1.05)
-            ax.legend()
-            fig.tight_layout()
-            fig.savefig(os.path.join(figdir, "17_recommendation_demo.png"),
-                        dpi=150, bbox_inches="tight")
-            plt.close()
-            print(f"  saved → {os.path.join(figdir, '17_recommendation_demo.png')}")
+    if not styles:
+        return
+    last = demo.get(styles[-1])
+    if last is None:
+        return
+    recs = generate_recommendations(last, profile)
+    if not recs:
+        return
+    labels = [r["label"] for r in recs][::-1]
+    impacts = [r["est_extra_fuel_pct"] for r in recs][::-1]
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    ax.barh(labels, impacts, color="#D65F5F")
+    ax.set(xlabel="Estimated extra fuel vs efficient reference (%)",
+           title=f"Estimated Impact - Sample '{styles[-1]}' Trip")
+    fig.tight_layout()
+    path = os.path.join(figdir, "17_recommendation_demo.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved -> {path}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--feat-file",  default="data/processed/features_clustered.csv")
-    ap.add_argument("--proc-dir",   default="data/processed")
+    ap.add_argument("--feat-file", default="data/processed/features_clustered.csv")
+    ap.add_argument("--proc-dir", default="data/processed")
     ap.add_argument("--report-dir", default="reports")
     args = ap.parse_args()
 
@@ -362,40 +207,35 @@ def main():
     df = pd.read_csv(args.feat_file)
     print(f"Loaded {len(df):,} clustered trips.")
 
-    # ── build profile ─────────────────────────────────────────────────────────
-    profile = build_profile(df)
-    print("\n── Efficient Driving Profile ──")
-    for feat, vals in profile.items():
-        if feat.startswith("_"):
-            continue
-        print(f"  {feat:<22} mean={vals['mean']:.3f}  std={vals['std']:.3f}  "
-              f"direction={vals['direction']}")
+    effects = estimate_effects(df)
+    profile = build_profile(df, effects)
 
-    # ── save profile ──────────────────────────────────────────────────────────
+    print("\n-- Estimated effect per +1 within-vehicle SD (95% CI) --")
+    for feat, e in effects.items():
+        flag = "recommended" if e["supported"] else "NOT recommended (CI includes 0)"
+        print(f"  {feat:<22} {e['pct_per_sd']:+5.1f}%  "
+              f"[{e['ci_low_pct']:+5.1f}, {e['ci_high_pct']:+5.1f}]  {flag}")
+
     prof_path = os.path.join(args.proc_dir, "efficient_profile.json")
     with open(prof_path, "w") as fh:
         json.dump(profile, fh, indent=2)
-    print(f"\n  Saved profile → {prof_path}")
+    print(f"\n  Saved profile -> {prof_path}")
 
-    # ── plots ─────────────────────────────────────────────────────────────────
     plot_profile_comparison(df, profile, figdir)
-
-    # ── demo recommendations ──────────────────────────────────────────────────
     demo_recommendations(df, profile, figdir, args.report_dir)
 
-    # ── text summary ─────────────────────────────────────────────────────────
+    meta = profile["_meta"]
     with open(os.path.join(args.report_dir, "efficient_profile.txt"), "w") as fh:
-        fh.write("=== FUEL-EFFICIENT DRIVING PROFILE ===\n\n")
-        fh.write(f"Built from {profile['_meta']['n_trips']} trips "
-                 f"(L/100km ≤ {profile['_meta']['l100km_threshold']:.2f})\n")
-        fh.write(f"Mean fuel consumption: {profile['_meta']['l100km_mean']:.2f} "
-                 f"± {profile['_meta']['l100km_std']:.2f} L/100km\n\n")
-        for feat, vals in profile.items():
-            if feat.startswith("_"):
-                continue
-            fh.write(f"{feat:<25} mean={vals['mean']:.3f}  "
-                     f"p25={vals['p25']:.3f}  p75={vals['p75']:.3f}  "
-                     f"direction={vals['direction']}\n")
+        fh.write("=== FUEL-EFFICIENT REFERENCE PROFILE ===\n\n")
+        fh.write(f"Built from {meta['n_trips']} trips of {meta['n_vehicles']} vehicles "
+                 f"(relative fuel <= {meta['rel_fuel_threshold']:.3f})\n")
+        fh.write(f"Recommended features: {meta['recommended_features']}\n\n")
+        for feat in CANDIDATE_FEATS:
+            p = profile[feat]
+            fh.write(f"{feat:<22} ref_mean={p['mean']:.3f}  p25={p['p25']:.3f}  "
+                     f"p75={p['p75']:.3f}  effect/SD={p['pct_per_sd']:+.1f}% "
+                     f"[{p['ci_low_pct']:+.1f}, {p['ci_high_pct']:+.1f}]  "
+                     f"supported={p['supported']}\n")
     print(f"  Saved: {args.report_dir}/efficient_profile.txt")
 
 
